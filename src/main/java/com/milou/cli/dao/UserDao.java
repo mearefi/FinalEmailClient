@@ -4,10 +4,14 @@ import com.milou.cli.exception.DuplicateEmailException;
 import com.milou.cli.exception.UserNotFoundException;
 import com.milou.cli.model.User;
 import jakarta.persistence.EntityManager;
+import com.milou.cli.exception.DuplicateEmailException;
+import com.milou.cli.exception.UserNotFoundException;
 
 import java.lang.runtime.ObjectMethods;
 
 public class UserDao {
+
+
     private final EntityManager em;
 
     public UserDao(EntityManager em) {
@@ -50,4 +54,8 @@ public class UserDao {
     public void delete(User u) {
         em.remove(em.contains(u) ? u : em.merge(u));
     }
+
+
 }
+
+
