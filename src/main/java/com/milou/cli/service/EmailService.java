@@ -1,17 +1,18 @@
 package com.milou.cli.service;
 
-import com.milou.cli.db.JPAUtil;
+import com.milou.cli.db.HibernateUtil;
 import com.milou.cli.model.Email;
 import com.milou.cli.model.Recipient;
 import com.milou.cli.model.User;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.TypedQuery;
+import org.hibernate.Session;
+import org.hibernate.Transaction;
+import org.hibernate.query.Query;
 
+import java.security.SecureRandom;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
-import java.security.SecureRandom;
-import java.time.format.DateTimeFormatter;
 
 public class EmailService {
     private final Scanner scanner = new Scanner(System.in);
@@ -45,22 +46,23 @@ public class EmailService {
         System.out.print("Body: ");
         String body = scanner.nextLine();
 
-        EntityManager em = JPAUtil.getEntityManager();
+        Session session = HibernateUtil.getSessionFactory().openSession();
+        Transaction tx = null;
         try {
-            em.getTransaction().begin();
+            tx = session.beginTransaction();
 
             Email email = new Email();
             email.setSender(sender);
             email.setSubject(subject);
             email.setBody(body);
             email.setCode(randomCode(6));
-            em.persist(email);
-            em.flush();
+            session.save(email);
+            session.flush();
 
             List<String> skipped = new ArrayList<>();
             for (String r : recipients) {
                 if (!r.contains("@")) r = r + "@milou.com";
-                TypedQuery<User> q = em.createQuery("SELECT u FROM User u WHERE u.email = :email", User.class);
+                Query<User> q = session.createQuery("from User u where u.email = :email", User.class);
                 q.setParameter("email", r);
                 List<User> found = q.getResultList();
                 if (found.isEmpty()) {
@@ -72,21 +74,21 @@ public class EmailService {
                 rec.setEmail(email);
                 rec.setUser(u);
                 rec.setRead(false);
-                em.persist(rec);
+                session.save(rec);
             }
 
-            em.getTransaction().commit();
+            tx.commit();
             System.out.println("Successfully sent your email.");
             System.out.println("Code: " + email.getCode());
             if (!skipped.isEmpty()) {
                 System.out.println("Warning: these recipients not found and were skipped: " + String.join(", ", skipped));
             }
         } catch (Exception ex) {
-            if (em.getTransaction().isActive()) em.getTransaction().rollback();
+            if (tx != null) tx.rollback();
             System.out.println("Error sending email: " + ex.getMessage());
             ex.printStackTrace();
         } finally {
-            em.close();
+            session.close();
         }
     }
 
@@ -95,27 +97,28 @@ public class EmailService {
             System.out.println("لطفاً ابتدا وارد شوید.");
             return;
         }
-        EntityManager em = JPAUtil.getEntityManager();
+
+        Session session = HibernateUtil.getSessionFactory().openSession();
         try {
             List<Email> list;
             switch (mode.toLowerCase()) {
                 case "all":
-                    list = em.createQuery(
-                                    "SELECT r.email FROM Recipient r WHERE r.user.id = :uid ORDER BY r.email.sentAt DESC", Email.class)
+                    list = session.createQuery(
+                                    "select r.email from Recipient r where r.user.id = :uid order by r.email.sentAt desc", Email.class)
                             .setParameter("uid", currentUser.getId())
                             .getResultList();
                     System.out.println("All Emails:");
                     break;
                 case "unread":
-                    list = em.createQuery(
-                                    "SELECT r.email FROM Recipient r WHERE r.user.id = :uid AND r.isRead = false ORDER BY r.email.sentAt DESC", Email.class)
+                    list = session.createQuery(
+                                    "select r.email from Recipient r where r.user.id = :uid and r.isRead = false order by r.email.sentAt desc", Email.class)
                             .setParameter("uid", currentUser.getId())
                             .getResultList();
                     System.out.println("Unread Emails:");
                     break;
                 case "sent":
-                    list = em.createQuery(
-                                    "SELECT e FROM Email e WHERE e.sender.id = :uid ORDER BY e.sentAt DESC", Email.class)
+                    list = session.createQuery(
+                                    "from Email e where e.sender.id = :uid order by e.sentAt desc", Email.class)
                             .setParameter("uid", currentUser.getId())
                             .getResultList();
                     System.out.println("Sent Emails:");
@@ -133,8 +136,8 @@ public class EmailService {
             for (int i = 0; i < list.size(); i++) {
                 Email e = list.get(i);
                 if (mode.equalsIgnoreCase("sent")) {
-                    List<String> rcps = em.createQuery(
-                                    "SELECT r.user.email FROM Recipient r WHERE r.email.id = :eid", String.class)
+                    List<String> rcps = session.createQuery(
+                                    "select r.user.email from Recipient r where r.email.id = :eid", String.class)
                             .setParameter("eid", e.getId())
                             .getResultList();
                     System.out.printf("[%d] + %s - %s (%s)%n", i + 1, String.join(", ", rcps), truncate(e.getSubject()), e.getCode());
@@ -147,7 +150,7 @@ public class EmailService {
             String in = scanner.nextLine().trim();
             if (in.isEmpty()) return;
 
-            String codeToRead = null;
+            String codeToRead;
             try {
                 int idx = Integer.parseInt(in);
                 if (idx >= 1 && idx <= list.size()) {
@@ -161,9 +164,8 @@ public class EmailService {
             }
 
             readByCode(currentUser, codeToRead);
-
         } finally {
-            em.close();
+            session.close();
         }
     }
 
@@ -171,30 +173,30 @@ public class EmailService {
         if (currentUser == null) { System.out.println("Login first."); return; }
         if (code == null || code.isEmpty()) { System.out.println("Code is empty."); return; }
 
-        EntityManager em = JPAUtil.getEntityManager();
+        Session session = HibernateUtil.getSessionFactory().openSession();
+        Transaction tx = null;
         try {
-            TypedQuery<Email> q = em.createQuery(
-                    "SELECT e FROM Email e WHERE e.code = :code", Email.class);
+            Query<Email> q = session.createQuery("from Email e where e.code = :code", Email.class);
             q.setParameter("code", code);
-            List<Email> found = q.getResultList();
-            if (found.isEmpty()) {
+            Email e = q.uniqueResult();
+            if (e == null) {
                 System.out.println("No email with that code.");
                 return;
             }
-            Email e = found.get(0);
+
             boolean allowed = false;
             if (e.getSender().getId().equals(currentUser.getId())) allowed = true;
-            Long cnt = em.createQuery(
-                            "SELECT COUNT(r) FROM Recipient r WHERE r.email.id = :eid AND r.user.id = :uid", Long.class)
-                    .setParameter("eid", e.getId()).setParameter("uid", currentUser.getId()).getSingleResult();
+            Long cnt = session.createQuery(
+                            "select count(r) from Recipient r where r.email.id = :eid and r.user.id = :uid", Long.class)
+                    .setParameter("eid", e.getId()).setParameter("uid", currentUser.getId()).uniqueResult();
             if (cnt != null && cnt > 0) allowed = true;
             if (!allowed) {
                 System.out.println("You cannot read this email.");
                 return;
             }
 
-            List<String> rcps = em.createQuery(
-                            "SELECT r.user.email FROM Recipient r WHERE r.email.id = :eid", String.class)
+            List<String> rcps = session.createQuery(
+                            "select r.user.email from Recipient r where r.email.id = :eid", String.class)
                     .setParameter("eid", e.getId())
                     .getResultList();
 
@@ -207,16 +209,15 @@ public class EmailService {
             System.out.println(e.getBody());
             System.out.println();
 
-            em.getTransaction().begin();
-            em.createQuery("UPDATE Recipient r SET r.isRead = true WHERE r.email.id = :eid AND r.user.id = :uid")
+            tx = session.beginTransaction();
+            session.createQuery("update Recipient r set r.isRead = true where r.email.id = :eid and r.user.id = :uid")
                     .setParameter("eid", e.getId()).setParameter("uid", currentUser.getId()).executeUpdate();
-            em.getTransaction().commit();
-
+            tx.commit();
         } catch (Exception ex) {
-            if (em.getTransaction().isActive()) em.getTransaction().rollback();
+            if (tx != null) tx.rollback();
             ex.printStackTrace();
         } finally {
-            em.close();
+            session.close();
         }
     }
 
@@ -226,11 +227,6 @@ public class EmailService {
         readByCode(currentUser, code);
     }
 
-    private String truncate(String s) {
-        if (s == null) return "";
-        return s.length() > 40 ? s.substring(0, 37) + "..." : s;
-    }
-
     public void reply(User currentUser) {
         if (currentUser == null) { System.out.println("Login first."); return; }
         System.out.print("Code: ");
@@ -238,27 +234,31 @@ public class EmailService {
         System.out.print("Body: ");
         String body = scanner.nextLine();
 
-        EntityManager em = JPAUtil.getEntityManager();
+        Session session = HibernateUtil.getSessionFactory().openSession();
+        Transaction tx = null;
         try {
-            em.getTransaction().begin();
-            Email original = em.createQuery("SELECT e FROM Email e WHERE e.code = :code", Email.class)
-                    .setParameter("code", code)
-                    .getResultStream().findFirst().orElse(null);
+            tx = session.beginTransaction();
+            Query<Email> q = session.createQuery("from Email e where e.code = :code", Email.class);
+            q.setParameter("code", code);
+            Email original = q.uniqueResult();
             if (original == null) {
                 System.out.println("Email not found.");
-                em.getTransaction().rollback();
-                return;
-            }
-            Long cnt = em.createQuery("SELECT COUNT(r) FROM Recipient r WHERE r.email.id = :eid AND r.user.id = :uid", Long.class)
-                    .setParameter("eid", original.getId()).setParameter("uid", currentUser.getId()).getSingleResult();
-            if (!(original.getSender().getId().equals(currentUser.getId()) || (cnt != null && cnt > 0))) {
-                System.out.println("You cannot reply to this email.");
-                em.getTransaction().rollback();
+                tx.rollback();
                 return;
             }
 
-            List<String> rcpsEmails = em.createQuery("SELECT DISTINCT u.email FROM Recipient r JOIN r.user u WHERE r.email.id = :eid", String.class)
-                    .setParameter("eid", original.getId()).getResultList();
+            Long cnt = session.createQuery("select count(r) from Recipient r where r.email.id = :eid and r.user.id = :uid", Long.class)
+                    .setParameter("eid", original.getId()).setParameter("uid", currentUser.getId()).uniqueResult();
+            if (!(original.getSender().getId().equals(currentUser.getId()) || (cnt != null && cnt > 0))) {
+                System.out.println("You cannot reply to this email.");
+                tx.rollback();
+                return;
+            }
+
+            List<String> rcpsEmails = session.createQuery(
+                            "select distinct u.email from Recipient r join r.user u where r.email.id = :eid", String.class)
+                    .setParameter("eid", original.getId())
+                    .getResultList();
             if (!rcpsEmails.contains(original.getSender().getEmail())) rcpsEmails.add(original.getSender().getEmail());
 
             Email reply = new Email();
@@ -266,30 +266,30 @@ public class EmailService {
             reply.setSubject("[Re] " + (original.getSubject() == null ? "" : original.getSubject()));
             reply.setBody(body);
             reply.setCode(randomCode(6));
-            em.persist(reply);
-            em.flush();
+            session.save(reply);
+            session.flush();
 
             for (String re : rcpsEmails) {
                 if (!re.contains("@")) re = re + "@milou.com";
-                TypedQuery<User> q = em.createQuery("SELECT u FROM User u WHERE u.email = :email", User.class);
-                q.setParameter("email", re);
-                List<User> found = q.getResultList();
+                Query<User> uq = session.createQuery("from User u where u.email = :email", User.class);
+                uq.setParameter("email", re);
+                List<User> found = uq.getResultList();
                 if (found.isEmpty()) continue;
                 Recipient rec = new Recipient();
                 rec.setEmail(reply);
                 rec.setUser(found.get(0));
                 rec.setRead(false);
-                em.persist(rec);
+                session.save(rec);
             }
 
-            em.getTransaction().commit();
+            tx.commit();
             System.out.println("Successfully sent your reply to email " + code + ".");
             System.out.println("Code: " + reply.getCode());
         } catch (Exception ex) {
-            if (em.getTransaction().isActive()) em.getTransaction().rollback();
+            if (tx != null) tx.rollback();
             ex.printStackTrace();
         } finally {
-            em.close();
+            session.close();
         }
     }
 
@@ -301,22 +301,24 @@ public class EmailService {
         String recipientsLine = scanner.nextLine().trim();
         String[] recipients = recipientsLine.split("\\s*,\\s*");
 
-        EntityManager em = JPAUtil.getEntityManager();
+        Session session = HibernateUtil.getSessionFactory().openSession();
+        Transaction tx = null;
         try {
-            em.getTransaction().begin();
-            Email original = em.createQuery("SELECT e FROM Email e WHERE e.code = :code", Email.class)
-                    .setParameter("code", code)
-                    .getResultStream().findFirst().orElse(null);
+            tx = session.beginTransaction();
+            Query<Email> q = session.createQuery("from Email e where e.code = :code", Email.class);
+            q.setParameter("code", code);
+            Email original = q.uniqueResult();
             if (original == null) {
                 System.out.println("Email not found.");
-                em.getTransaction().rollback();
+                tx.rollback();
                 return;
             }
-            Long cnt = em.createQuery("SELECT COUNT(r) FROM Recipient r WHERE r.email.id = :eid AND r.user.id = :uid", Long.class)
-                    .setParameter("eid", original.getId()).setParameter("uid", currentUser.getId()).getSingleResult();
+
+            Long cnt = session.createQuery("select count(r) from Recipient r where r.email.id = :eid and r.user.id = :uid", Long.class)
+                    .setParameter("eid", original.getId()).setParameter("uid", currentUser.getId()).uniqueResult();
             if (!(original.getSender().getId().equals(currentUser.getId()) || (cnt != null && cnt > 0))) {
                 System.out.println("You cannot forward this email.");
-                em.getTransaction().rollback();
+                tx.rollback();
                 return;
             }
 
@@ -325,15 +327,15 @@ public class EmailService {
             fw.setSubject("[Fw] " + (original.getSubject() == null ? "" : original.getSubject()));
             fw.setBody(original.getBody());
             fw.setCode(randomCode(6));
-            em.persist(fw);
-            em.flush();
+            session.save(fw);
+            session.flush();
 
             List<String> skipped = new ArrayList<>();
             for (String r : recipients) {
                 if (!r.contains("@")) r = r + "@milou.com";
-                TypedQuery<User> q = em.createQuery("SELECT u FROM User u WHERE u.email = :email", User.class);
-                q.setParameter("email", r);
-                List<User> found = q.getResultList();
+                Query<User> uq = session.createQuery("from User u where u.email = :email", User.class);
+                uq.setParameter("email", r);
+                List<User> found = uq.getResultList();
                 if (found.isEmpty()) {
                     skipped.add(r);
                     continue;
@@ -342,21 +344,25 @@ public class EmailService {
                 rec.setEmail(fw);
                 rec.setUser(found.get(0));
                 rec.setRead(false);
-                em.persist(rec);
+                session.save(rec);
             }
 
-            em.getTransaction().commit();
+            tx.commit();
             System.out.println("Successfully forwarded your email.");
             System.out.println("Code: " + fw.getCode());
             if (!skipped.isEmpty()) {
                 System.out.println("Warning: these recipients not found and were skipped: " + String.join(", ", skipped));
             }
         } catch (Exception ex) {
-            if (em.getTransaction().isActive()) em.getTransaction().rollback();
+            if (tx != null) tx.rollback();
             ex.printStackTrace();
         } finally {
-            em.close();
+            session.close();
         }
     }
 
+    private String truncate(String s) {
+        if (s == null) return "";
+        return s.length() > 40 ? s.substring(0, 37) + "..." : s;
+    }
 }

@@ -1,13 +1,11 @@
 package com.milou.cli;
 
 import com.milou.cli.dao.UserDao;
-import com.milou.cli.db.JPAUtil;
 import com.milou.cli.exception.DuplicateEmailException;
 import com.milou.cli.exception.InvalidCredentialsException;
 import com.milou.cli.exception.UserNotFoundException;
 import com.milou.cli.model.User;
 import com.milou.cli.service.EmailService;
-import jakarta.persistence.EntityManager;
 
 import java.security.MessageDigest;
 import java.util.Base64;
@@ -20,14 +18,15 @@ public class CLIHandler {
 
     public void start() {
         while (true) {
-            System.out.print("[L]ogin, [S]ign up: ");
+            System.out.print("[L]ogin, [S]ign up, [Q]uit: ");
             String cmd = scanner.nextLine().trim();
             if (cmd.equalsIgnoreCase("L") || cmd.equalsIgnoreCase("Login")) {
-                if (login()) {
-                    mainMenu();
-                }
+                if (login()) mainMenu();
             } else if (cmd.equalsIgnoreCase("S") || cmd.equalsIgnoreCase("Sign up")) {
                 signup();
+            } else if (cmd.equalsIgnoreCase("Q") || cmd.equalsIgnoreCase("Quit") || cmd.equalsIgnoreCase("exit")) {
+                System.out.println("Bye!");
+                break;
             } else {
                 System.out.println("Invalid command.");
             }
@@ -47,27 +46,19 @@ public class CLIHandler {
             return;
         }
 
-        EntityManager em = JPAUtil.getEntityManager();
-        UserDao userDao = new UserDao(em);
-
-        em.getTransaction().begin();
+        UserDao userDao = new UserDao();
         try {
             User u = new User();
             u.setName(name);
             u.setEmail(email);
             u.setPasswordHash(hashPassword(pass));
             userDao.saveOrThrow(u);
-            em.getTransaction().commit();
             System.out.println("Your new account is created.\nGo ahead and login!");
         } catch (DuplicateEmailException ex) {
-            em.getTransaction().rollback();
             System.out.println("Email already taken. Try again.");
         } catch (Exception ex) {
-            if (em.getTransaction().isActive()) em.getTransaction().rollback();
             ex.printStackTrace();
             System.out.println("Error during signup.");
-        } finally {
-            em.close();
         }
     }
 
@@ -78,10 +69,7 @@ public class CLIHandler {
         System.out.print("Password: ");
         String pass = scanner.nextLine();
 
-        EntityManager em = JPAUtil.getEntityManager();
-        UserDao userDao = new UserDao(em);
-
-        em.getTransaction().begin();
+        UserDao userDao = new UserDao();
         try {
             User u = userDao.findByEmailOrThrow(email);
             if (!verifyPassword(pass, u.getPasswordHash())) {
@@ -89,20 +77,14 @@ public class CLIHandler {
             }
             this.currentUser = u;
             System.out.println("Welcome back, " + u.getName() + "!");
-            // show unread summary
             emailService.viewList(currentUser, "unread");
-            em.getTransaction().commit();
             return true;
         } catch (UserNotFoundException | InvalidCredentialsException ex) {
             System.out.println("Invalid credentials.");
-            em.getTransaction().rollback();
             return false;
         } catch (Exception ex) {
-            if (em.getTransaction().isActive()) em.getTransaction().rollback();
             ex.printStackTrace();
             return false;
-        } finally {
-            em.close();
         }
     }
 

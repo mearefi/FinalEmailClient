@@ -1,7 +1,13 @@
 package com.milou.cli;
 
+import com.milou.cli.db.HibernateUtil;
+
 public class Main {
     public static void main(String[] args) {
-        new CLIHandler().start();
+        try {
+            new CLIHandler().start();
+        } finally {
+            HibernateUtil.shutdown();
+        }
     }
 }
