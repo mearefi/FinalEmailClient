@@ -17,11 +17,11 @@ public class HibernateUtil {
             Configuration configuration = new Configuration();
             configuration.configure("hibernate.cfg.xml");
 
-            // ثبت صریح کلاس‌های انوتیت‌شده
+
             configuration.addAnnotatedClass(User.class);
             configuration.addAnnotatedClass(Email.class);
             configuration.addAnnotatedClass(Recipient.class);
-            // اگر کلاس RecipientId به عنوان اَنوته دارید (composite key)، اضافه کن:
+
             try {
                 configuration.addAnnotatedClass(RecipientId.class);
             } catch (Throwable ignored) {}
